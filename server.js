@@ -419,8 +419,11 @@ app.use((error, req, res, next) => {
 // START SERVER
 // ============================================
 
-app.listen(3000, "127.0.0.1", () => {
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Email Agent API running on port ${PORT}`);
+});
   console.log(
     "🚀 Email Agent API running on http://127.0.0.1:3000"
   );
-});
