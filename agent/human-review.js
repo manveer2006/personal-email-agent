@@ -23,6 +23,17 @@ async function saveQueue(queue) {
 export async function saveHumanReview(item) {
   const queue = await loadQueue();
 
+  // Prevent duplicate pending reviews for the same email.
+  const existing = queue.find(
+    (review) =>
+      review.emailId === item.emailId &&
+      review.status === "PENDING"
+  );
+
+  if (existing) {
+    return existing;
+  }
+
   const review = {
     id: `${Date.now()}-${Math.random()
       .toString(36)

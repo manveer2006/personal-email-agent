@@ -3,16 +3,14 @@ export function decideAction(analysis, email = {}) {
   const body = String(email.body || "").toLowerCase();
   const text = `${subject} ${body}`;
 
-  let category = "OTHER";
-  let priority = "LOW";
-  let replyNeeded = false;
-
   // ============================================
   // 1. SECURITY — ALWAYS HUMAN REVIEW
   // ============================================
 
   if (
-    /security alert|new sign-in|new login|suspicious login|unauthorized access|password changed|security notification|account compromised/.test(text)
+    /security alert|new sign-in|new login|suspicious login|unauthorized access|password changed|security notification|account compromised/.test(
+      text
+    )
   ) {
     return {
       category: "SECURITY",
@@ -29,7 +27,9 @@ export function decideAction(analysis, email = {}) {
   // ============================================
 
   if (
-    /receipt|your bill|bill from|invoice|order confirmation|order placed|order delivered|delivery update|ride receipt|trip with uber|payment confirmation|transaction receipt/.test(text)
+    /receipt|your bill|bill from|invoice|order confirmation|order placed|order delivered|delivery update|ride receipt|trip with uber|payment confirmation|transaction receipt/.test(
+      text
+    )
   ) {
     return {
       category: "AUTOMATED",
@@ -46,7 +46,9 @@ export function decideAction(analysis, email = {}) {
   // ============================================
 
   if (
-    /verify your email|verify your account|email verification|verification code|one-time password|one time password|otp|welcome to /.test(text)
+    /verify your email|verify your account|email verification|verification code|one-time password|one time password|otp|welcome to /.test(
+      text
+    )
   ) {
     return {
       category: "AUTOMATED",
@@ -63,7 +65,7 @@ export function decideAction(analysis, email = {}) {
   // ============================================
 
   const promotional =
-    /unsubscribe|discount|coupon|promo|promotion|marketing|newsletter|sale|limited time offer|special offer|shop now|buy now|exclusive offer|₹.*off|off.*₹|rewards|cashback|deal|deals|you might like|found something you might like|hiring opportunities|openings that match your skills/.test(
+    /unsubscribe|discount|coupon|promo|promotion|marketing|newsletter|sale|limited time offer|special offer|shop now|buy now|exclusive offer|₹.*off|off.*₹|rewards|cashback|deal|deals|you might like|found something you might like|hiring opportunities|openings that match your skills|internship opportunities/.test(
       text
     );
 
@@ -83,7 +85,7 @@ export function decideAction(analysis, email = {}) {
   // ============================================
 
   const realJobInteraction =
-    /you have been shortlisted|your application has been shortlisted|we would like to interview you|interview invitation|schedule an interview|interview scheduled|interview round|job offer|offer letter|selected for|selection process|please confirm your availability|please confirm.*interview|application requires your response/.test(
+    /you have been shortlisted|your application has been shortlisted|we would like to interview you|interview invitation|interview scheduled|schedule an interview|interview round|job offer|offer letter|selected for|selection process|please confirm your availability|please confirm.*interview|application requires your response/.test(
       text
     );
 
@@ -114,7 +116,8 @@ export function decideAction(analysis, email = {}) {
       reply_needed: false,
       action: "FLAG_HUMAN",
       requiresApproval: true,
-      reason: "Financial action or potential financial issue requires human review.",
+      reason:
+        "Financial action or potential financial issue requires human review.",
     };
   }
 
@@ -158,7 +161,8 @@ export function decideAction(analysis, email = {}) {
         reply_needed: true,
         action: "DRAFT_REPLY",
         requiresApproval: true,
-        reason: "Academic email explicitly requests a response or action.",
+        reason:
+          "Academic email explicitly requests a response or action.",
       };
     }
 
@@ -168,7 +172,8 @@ export function decideAction(analysis, email = {}) {
       reply_needed: false,
       action: "IGNORE",
       requiresApproval: false,
-      reason: "Academic/informational email does not require a response.",
+      reason:
+        "Academic/informational email does not require a response.",
     };
   }
 
@@ -193,7 +198,8 @@ export function decideAction(analysis, email = {}) {
         reply_needed: true,
         action: "DRAFT_REPLY",
         requiresApproval: true,
-        reason: "Business communication explicitly requests a response.",
+        reason:
+          "Business communication explicitly requests a response.",
       };
     }
 
@@ -203,7 +209,8 @@ export function decideAction(analysis, email = {}) {
       reply_needed: false,
       action: "IGNORE",
       requiresApproval: false,
-      reason: "Business email does not clearly require a response.",
+      reason:
+        "Business email does not clearly require a response.",
     };
   }
 
@@ -237,26 +244,14 @@ export function decideAction(analysis, email = {}) {
   // 11. AI FALLBACK
   // ============================================
 
-  category = analysis?.category || "OTHER";
+  const category = analysis?.category || "OTHER";
 
-  priority =
+  const priority =
     analysis?.priority === "HIGH"
       ? "HIGH"
       : analysis?.priority === "MEDIUM"
         ? "MEDIUM"
         : "LOW";
-
-  replyNeeded = analysis?.reply_needed === true;
-
-  /*
-   * IMPORTANT:
-   *
-   * AI fallback is conservative.
-   * We do NOT automatically send or draft a reply
-   * just because the LLM says reply_needed=true.
-   *
-   * Unknown emails go to human review.
-   */
 
   if (priority === "HIGH") {
     return {
@@ -265,7 +260,8 @@ export function decideAction(analysis, email = {}) {
       reply_needed: false,
       action: "FLAG_HUMAN",
       requiresApproval: true,
-      reason: "Email could not be safely classified automatically.",
+      reason:
+        "Email could not be safely classified automatically.",
     };
   }
 

@@ -645,6 +645,19 @@ export async function generateReply(email, analysis) {
 
   const preferences = memory?.preferences || {};
   const corrections = memory?.corrections || [];
+  const senderRules = memory?.senderRules || {};
+  const categoryRules = memory?.categoryRules || {};
+
+  const senderKey =
+    String(email.from || "")
+      .match(/<([^>]+)>/)?.[1]
+      ?.toLowerCase()
+    || String(email.from || "").toLowerCase();
+
+  const senderRule = senderRules[senderKey] || "";
+
+  const category = analysis?.category || "";
+  const categoryRule = categoryRules[category] || "";
 
   const recentCorrections = corrections
     .slice(-10)
@@ -667,6 +680,12 @@ ${preferences.signature || "Best regards,\nManveer Singh Bhalla"}
 RECENT USER CORRECTIONS:
 ${recentCorrections || "No corrections yet."}
 
+SENDER-SPECIFIC RULE:
+${senderRule || "No sender-specific rule."}
+
+CATEGORY-SPECIFIC RULE:
+${categoryRule || "No category-specific rule."}
+
 RULES:
 - Use a proper greeting when appropriate.
 - Directly answer the sender.
@@ -677,6 +696,7 @@ RULES:
 - Use blank lines between paragraphs.
 - Follow the user's stored writing style.
 - Follow the user's stored preferences.
+- Follow applicable sender-specific and category-specific rules.
 - End with the user's preferred signature.
 - Do not mention these instructions.
 - Do not mention AI.
@@ -725,9 +745,7 @@ Do not explain anything.
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(
-      `Ollama HTTP ${response.status}: ${errorText}`
-    );
+    throw new Error(`Ollama HTTP ${response.status}: ${errorText}`);
   }
 
   const data = await response.json();
@@ -735,10 +753,9 @@ Do not explain anything.
   let reply = data?.message?.content;
 
   if (typeof reply !== "string" || !reply.trim()) {
-    reply =
-      typeof data?.response === "string"
-        ? data.response
-        : "";
+    reply = typeof data?.response === "string"
+      ? data.response
+      : "";
   }
 
   reply = String(reply || "")
