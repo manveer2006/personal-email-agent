@@ -1,6 +1,7 @@
 import { getGmail, getUnreadEmails } from "../email-agent.js";
 import { decideAction } from "./decision-engine.js";
 import { generateReply } from "../email-agent.js";
+import { savePendingReply } from "./pending.js";
 
 export async function runEmailAgent(analyzeEmail) {
   console.log("🤖 Email Agent starting...");
@@ -31,10 +32,23 @@ export async function runEmailAgent(analyzeEmail) {
         ...decision,
       });
 
-      console.log("✅ Reply generated.");
-      console.log("----- DRAFT -----");
-      console.log(draft);
-      console.log("-----------------");
+        console.log("✅ Reply generated.");
+
+        const pending = await savePendingReply({
+          emailId: email.id,
+          threadId: email.threadId,
+          from: email.from,
+          subject: email.subject,
+          originalBody: email.body,
+          category: decision.category,
+          priority: decision.priority,
+          draft,
+        });
+
+        console.log("📝 Saved for approval:", pending.id);
+        console.log("----- DRAFT -----");
+        console.log(draft);
+        console.log("-----------------");
     }
 
     results.push({
