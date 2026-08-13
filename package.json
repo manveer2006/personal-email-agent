@@ -7,7 +7,10 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
     "agent": "node run-agent.js",
-    "approve": "node approve.js"
+    "approve": "node approve.js",
+    "review": "node review.js",
+    "approve-human": "node human-approve.js",
+    "reject-human": "node human-reject.js"
   },
   "keywords": [],
   "author": "",

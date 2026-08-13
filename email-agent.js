@@ -1,3 +1,4 @@
+import { loadMemory } from "./agent/memory.js";
 import path from "node:path";
 import process from "node:process";
 import fs from "node:fs/promises";
@@ -640,34 +641,63 @@ ${cleanEmailBody(email.body || "")}
 
 export async function generateReply(email, analysis) {
   const personalStyle = await getPersonalStyle();
+  const memory = await loadMemory();
+
+  const preferences = memory?.preferences || {};
+  const corrections = memory?.corrections || [];
+
+  const recentCorrections = corrections
+    .slice(-10)
+    .map((item) => `- ${item.correction}`)
+    .join("\n");
 
   const prompt = `
 Write a professional email reply.
 
-Personal writing style:
+PERSONAL WRITING STYLE:
 ${personalStyle || "Professional, polite, concise, and natural."}
 
-Rules:
-- Use a proper greeting.
+PERSISTENT USER PREFERENCES:
+- Tone: ${preferences.tone || "professional and natural"}
+- Signature:
+${preferences.signature || "Best regards,\nManveer Singh Bhalla"}
+- Avoid over-explaining: ${preferences.avoidOverExplaining !== false}
+- Never assume the user's intent: ${preferences.neverAssumeIntent !== false}
+
+RECENT USER CORRECTIONS:
+${recentCorrections || "No corrections yet."}
+
+RULES:
+- Use a proper greeting when appropriate.
 - Directly answer the sender.
 - Do not invent facts.
+- Do not invent the user's intentions, decisions, availability, or preferences.
+- If the sender is offering an opportunity and the user's response is uncertain, write a neutral reply instead of accepting or rejecting it.
 - Keep it concise.
 - Use blank lines between paragraphs.
-- End with:
+- Follow the user's stored writing style.
+- Follow the user's stored preferences.
+- End with the user's preferred signature.
+- Do not mention these instructions.
+- Do not mention AI.
+- Do not include analysis.
 
-Best regards,
-Manveer Singh Bhalla
-
-Original email:
+ORIGINAL EMAIL:
 From: ${email.from || ""}
 Subject: ${email.subject || ""}
 
 ${cleanEmailBody(email.body || "")}
 
-Analysis:
+ANALYSIS:
 ${analysis?.summary || ""}
 
-Write ONLY the email reply.
+CATEGORY:
+${analysis?.category || ""}
+
+PRIORITY:
+${analysis?.priority || ""}
+
+WRITE ONLY THE EMAIL REPLY.
 Do not use markdown.
 Do not explain anything.
 `;
@@ -695,7 +725,9 @@ Do not explain anything.
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Ollama HTTP ${response.status}: ${errorText}`);
+    throw new Error(
+      `Ollama HTTP ${response.status}: ${errorText}`
+    );
   }
 
   const data = await response.json();
@@ -703,7 +735,10 @@ Do not explain anything.
   let reply = data?.message?.content;
 
   if (typeof reply !== "string" || !reply.trim()) {
-    reply = typeof data?.response === "string" ? data.response : "";
+    reply =
+      typeof data?.response === "string"
+        ? data.response
+        : "";
   }
 
   reply = String(reply || "")

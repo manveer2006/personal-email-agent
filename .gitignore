@@ -5,3 +5,4 @@ credentials.json
 .env
 pending-replies.json
 agent-memory.json
+human-review.json
