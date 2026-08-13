@@ -17,7 +17,7 @@ export async function runEmailAgent(analyzeEmail) {
 
     const analysis = await analyzeEmail(email);
 
-    const decision = decideAction(analysis);
+    const decision = decideAction(analysis, email);
 
     console.log("🧠 Analysis:", analysis);
     console.log("🎯 Decision:", decision);
