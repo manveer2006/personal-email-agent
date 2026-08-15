@@ -6,6 +6,13 @@ import { authenticate } from "@google-cloud/local-auth";
 import { google } from "googleapis";
 import { loadMemory } from "./agent/memory.js";
 
+import OpenAI from "openai";
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+const OPENAI_MODEL = "gpt-5.6";
 
 // ============================================
 // GMAIL PERMISSIONS
@@ -559,48 +566,18 @@ Body:
 ${cleanEmailBody(email.body || "")}
 `;
 
-  console.log("Sending request to Qwen3...");
+  console.log("Sending request to OpenAI...");
 
-  const response = await fetch("http://127.0.0.1:11434/api/chat", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "qwen3:8b",
-      messages: [
-        {
-          role: "user",
-          content: `/no_think\n\n${prompt}`,
-        },
-      ],
-      stream: false,
-      think: false,
-      format: "json",
-      options: {
-        temperature: 0,
-      },
-    }),
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY is not configured.");
+  }
+
+  const response = await openai.responses.create({
+    model: OPENAI_MODEL,
+    input: prompt,
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Ollama HTTP ${response.status}: ${errorText}`);
-  }
-
-  const data = await response.json();
-
-  console.log("Qwen3 response received.");
-
-  let text = data?.message?.content;
-
-  if (typeof text !== "string" || !text.trim()) {
-    text = typeof data?.response === "string" ? data.response : "";
-  }
-
-  if (!text.trim() && typeof data?.message?.thinking === "string") {
-    text = data.message.thinking;
-  }
+  let text = response.output_text;
 
   text = String(text || "")
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
@@ -609,8 +586,7 @@ ${cleanEmailBody(email.body || "")}
     .trim();
 
   if (!text) {
-    console.error("Full Qwen3 response:", JSON.stringify(data, null, 2));
-    throw new Error("Qwen3 returned an empty response.");
+    throw new Error("OpenAI returned an empty response.");
   }
 
   const firstBrace = text.indexOf("{");
@@ -634,8 +610,8 @@ ${cleanEmailBody(email.body || "")}
         result.reply_needed === true,
     };
   } catch (error) {
-    console.error("Qwen3 invalid JSON:", text);
-    throw new Error("Qwen3 returned invalid JSON.");
+    console.error("OpenAI invalid JSON:", text);
+    throw new Error("OpenAI returned invalid JSON.");
   }
 }
 
@@ -735,47 +711,23 @@ PRIORITY:
 ${analysis?.priority || ""}
 
 WRITE ONLY THE EMAIL REPLY.
+
 Do not use markdown.
 Do not explain anything.
 `;
 
-  const response = await fetch("http://127.0.0.1:11434/api/chat", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "qwen3:8b",
-      messages: [
-        {
-          role: "user",
-          content: `/no_think\n\n${prompt}`,
-        },
-      ],
-      stream: false,
-      think: false,
-      options: {
-        temperature: 0.7,
-      },
-    }),
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY is not configured.");
+  }
+
+  const response = await openai.responses.create({
+    model: OPENAI_MODEL,
+    input: prompt,
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Ollama HTTP ${response.status}: ${errorText}`);
-  }
+  let reply = response.output_text;
 
-  const data = await response.json();
-
-  let reply = data?.message?.content;
-
-  if (typeof reply !== "string" || !reply.trim()) {
-    reply = typeof data?.response === "string"
-      ? data.response
-      : "";
-  }
-
-    reply = String(reply || "")
+  reply = String(reply || "")
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .trim();
 
@@ -787,7 +739,7 @@ Do not explain anything.
     .trim();
 
   if (!reply) {
-    throw new Error("Qwen3 returned an empty reply.");
+    throw new Error("OpenAI returned an empty reply.");
   }
 
   return reply;
@@ -1005,7 +957,7 @@ async function processEmail(
     );
 
     console.log(
-      "Skipping Qwen3 analysis."
+      "Skipping AI analysis."
     );
 
     console.log(
@@ -1024,7 +976,7 @@ async function processEmail(
   // ------------------------------------------
 
   console.log(
-    "\n🧠 Analyzing with Qwen3..."
+    "\n🧠 Analyzing with OpenAI..."
   );
 
   let analysis;
