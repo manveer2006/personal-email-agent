@@ -1,10 +1,10 @@
-import { loadMemory } from "./agent/memory.js";
 import path from "node:path";
 import process from "node:process";
 import fs from "node:fs/promises";
 import readline from "node:readline/promises";
 import { authenticate } from "@google-cloud/local-auth";
 import { google } from "googleapis";
+import { loadMemory } from "./agent/memory.js";
 
 
 // ============================================
@@ -111,108 +111,112 @@ export async function getGmail() {
 // ============================================
 
 export async function getUnreadEmails(gmail) {
-  console.log(
-    "Searching Gmail for unread emails..."
-  );
+  console.log("Searching Gmail for unread emails...");
 
-  const response =
-    await gmail.users.messages.list({
-      userId: "me",
-      labelIds: ["INBOX", "UNREAD"],
-      maxResults: 10,
-    });
+  const response = await gmail.users.messages.list({
+    userId: "me",
+    labelIds: ["INBOX"],
+    maxResults: 100,
+  });
 
-  const messages =
-    response.data.messages || [];
+  const messages = response.data.messages || [];
 
-  console.log(
-    `Gmail returned ${messages.length} unread email(s).`
-  );
+  console.log(`Gmail returned ${messages.length} unread email(s).`);
 
-  if (messages.length === 0) {
-    return [];
-  }
+  if (messages.length === 0) return [];
 
-  const emails = [];
-
-  for (
-    let i = 0;
-    i < messages.length;
-    i++
-  ) {
-    const message = messages[i];
-
-    console.log(
-      `Reading email ${i + 1}/${messages.length}...`
-    );
-
-    try {
-      const messageResponse =
-        await gmail.users.messages.get({
+  const results = await Promise.all(
+    messages.map(async (message, index) => {
+      console.log(`Reading email ${index + 1}/${messages.length}...`);
+      try {
+        const messageResponse = await gmail.users.messages.get({
           userId: "me",
           id: message.id,
           format: "full",
         });
 
-      const fullMessage =
-        messageResponse.data;
+        const fullMessage = messageResponse.data;
+        const headers = fullMessage.payload?.headers || [];
 
-      const headers =
-        fullMessage.payload?.headers || [];
-
-      emails.push({
-        id: fullMessage.id,
-
-        threadId:
-          fullMessage.threadId,
-
-        internalDate:
-          fullMessage.internalDate,
-
-        from:
-          findHeader(headers, "From"),
-
-        subject:
-          findHeader(headers, "Subject"),
-
-        date:
-          findHeader(headers, "Date"),
-
-        body:
-          extractBody(
-            fullMessage.payload
-          ),
-
-        payload:
-          fullMessage.payload,
-
-        labelIds:
-          fullMessage.labelIds || [],
-      });
-
-    } catch (error) {
-      console.log(
-        `⚠️ Could not read email ${message.id}`
-      );
-
-      console.log(
-        error.message
-      );
-    }
-  }
-
-  console.log(
-    `Finished reading ${emails.length} email(s).`
+        return {
+          id: fullMessage.id,
+          threadId: fullMessage.threadId,
+          internalDate: fullMessage.internalDate,
+          from: findHeader(headers, "From"),
+          subject: findHeader(headers, "Subject"),
+          date: findHeader(headers, "Date"),
+          body: extractBody(fullMessage.payload),
+          payload: fullMessage.payload,
+          labelIds: fullMessage.labelIds || [],
+        };
+      } catch (error) {
+        console.log(`⚠️ Could not read email ${message.id}`);
+        console.log(error.message);
+        return null;
+      }
+    })
   );
 
+  const emails = results.filter(Boolean);
+  console.log(`Finished reading ${emails.length} email(s).`);
   return emails;
+}
+
+// ============================================
+// GET LIGHTWEIGHT UNREAD EMAIL SUMMARIES
+// ============================================
+// Used by the desktop dashboard. Metadata only means
+// the UI does not download full message bodies/payloads.
+
+export async function getUnreadEmailSummaries(gmail) {
+  console.log("Searching Gmail for lightweight unread emails...");
+
+  const response = await gmail.users.messages.list({
+    userId: "me",
+    labelIds: ["INBOX"],
+    maxResults: 100,
+  });
+
+  const messages = response.data.messages || [];
+  if (messages.length === 0) return [];
+
+  const results = await Promise.all(
+    messages.map(async (message) => {
+      try {
+        const messageResponse = await gmail.users.messages.get({
+          userId: "me",
+          id: message.id,
+          format: "metadata",
+          metadataHeaders: ["From", "Subject", "Date"],
+        });
+
+        const data = messageResponse.data;
+        const headers = data.payload?.headers || [];
+
+        return {
+          id: data.id || "",
+          threadId: data.threadId || "",
+          from: findHeader(headers, "From"),
+          subject: findHeader(headers, "Subject"),
+          date: findHeader(headers, "Date"),
+          labelIds: data.labelIds || [],
+        };
+      } catch (error) {
+        console.log(`⚠️ Could not read email summary ${message.id}`);
+        console.log(error.message);
+        return null;
+      }
+    })
+  );
+
+  return results.filter(Boolean);
 }
 
 // ============================================
 // PROCESSED EMAIL DATABASE
 // ============================================
 
-async function getProcessedEmails() {
+export async function getProcessedEmails() {
   try {
     const data = await fs.readFile(
       PROCESSED_EMAILS_PATH,
@@ -639,7 +643,7 @@ ${cleanEmailBody(email.body || "")}
 // GENERATE PERSONALIZED REPLY
 // ============================================
 
-export async function generateReply(email, analysis) {
+export async function generateReply(email, analysis, feedback = "", currentDraft = "") {
   const personalStyle = await getPersonalStyle();
   const memory = await loadMemory();
 
@@ -686,6 +690,12 @@ ${senderRule || "No sender-specific rule."}
 CATEGORY-SPECIFIC RULE:
 ${categoryRule || "No category-specific rule."}
 
+  REGENERATION / ADDITIONAL INSTRUCTIONS:
+  ${feedback || "This is the initial draft. Create the best appropriate reply."}
+
+  PREVIOUS DRAFT:
+  ${currentDraft || "No previous draft exists."}
+
 RULES:
 - Use a proper greeting when appropriate.
 - Directly answer the sender.
@@ -701,6 +711,13 @@ RULES:
 - Do not mention these instructions.
 - Do not mention AI.
 - Do not include analysis.
+  - Output ONLY the email body.
+  - NEVER include a Subject line.
+  - NEVER include "Subject:".
+  - NEVER include "To:".
+  - NEVER include "From:".
+  - NEVER include email headers.
+  - NEVER wrap the reply in markdown or code blocks.
 
 ORIGINAL EMAIL:
 From: ${email.from || ""}
@@ -738,7 +755,7 @@ Do not explain anything.
       stream: false,
       think: false,
       options: {
-        temperature: 0.2,
+        temperature: 0.7,
       },
     }),
   });
@@ -758,8 +775,15 @@ Do not explain anything.
       : "";
   }
 
-  reply = String(reply || "")
+    reply = String(reply || "")
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .trim();
+
+  // Remove accidental email headers generated by the model.
+  reply = reply
+    .replace(/^subject\s*:.*\r?\n?/im, "")
+    .replace(/^to\s*:.*\r?\n?/im, "")
+    .replace(/^from\s*:.*\r?\n?/im, "")
     .trim();
 
   if (!reply) {

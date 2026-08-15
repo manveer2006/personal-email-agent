@@ -45,11 +45,18 @@ export async function runEmailAgent(analyzeEmail) {
 
         console.log("🔄 Regenerating draft...");
 
-        draft = await generateReply(email, {
-          ...analysis,
-          ...decision,
-          validationProblems: validation.problems,
-        });
+        draft = await generateReply(
+  email,
+  {
+    ...analysis,
+    ...decision,
+  },
+  `The previous draft failed validation for these reasons:
+${validation.problems.map((problem) => `- ${problem}`).join("\n")}
+
+Create a corrected version that fixes every problem above.`,
+  draft
+);
 
         validation = validateDraft(draft, email);
       }

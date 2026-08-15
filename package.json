@@ -1,13 +1,14 @@
 {
   "name": "personal-email-agent",
   "version": "1.0.0",
+  "main": "desktop/main.js",
   "description": "",
-  "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
     "agent": "node run-agent.js",
     "approve": "node approve.js",
+    "desktop": "electron .",
     "review": "node review.js",
     "approve-human": "node human-approve.js",
     "reject-human": "node human-reject.js"
@@ -24,5 +25,8 @@
     "express": "^5.2.1",
     "googleapis": "^105.0.0",
     "openai": "^7.4.0"
+  },
+  "devDependencies": {
+    "electron": "^43.4.0"
   }
 }
