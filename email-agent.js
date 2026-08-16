@@ -2,7 +2,6 @@ import path from "node:path";
 import process from "node:process";
 import fs from "node:fs/promises";
 import readline from "node:readline/promises";
-import { authenticate } from "@google-cloud/local-auth";
 import { google } from "googleapis";
 import { loadMemory } from "./agent/memory.js";
 
@@ -27,15 +26,7 @@ const SCOPES = [
 // FILE PATHS
 // ============================================
 
-const CREDENTIALS_PATH = path.join(
-  process.cwd(),
-  "credentials.json"
-);
 
-const PROCESSED_EMAILS_PATH = path.join(
-  process.cwd(),
-  "processed-emails.json"
-);
 
 
 // ============================================
@@ -101,15 +92,24 @@ function extractEmailAddress(from) {
 // GMAIL CONNECTION
 // ============================================
 
-export async function getGmail() {
-  const auth = await authenticate({
-    scopes: SCOPES,
-    keyfilePath: CREDENTIALS_PATH,
+export async function getGmail(accessToken, refreshToken) {
+  if (!accessToken) {
+    throw new Error("Google access token is missing.");
+  }
+
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET
+  );
+
+  oauth2Client.setCredentials({
+    access_token: accessToken,
+    refresh_token: refreshToken || undefined,
   });
 
   return google.gmail({
     version: "v1",
-    auth,
+    auth: oauth2Client,
   });
 }
 

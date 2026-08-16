@@ -1,5 +1,8 @@
+
 import express from "express";
 import cors from "cors";
+import { createClient } from "@supabase/supabase-js";
+import { google } from "googleapis";
 
 import {
   getGmail,
@@ -18,29 +21,100 @@ import {
 import {
   getHumanReviews,
   removeHumanReview,
-} from "./agent/human-review.js";
+} from "./agent/human-review\.js";
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-let gmail = null;
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
 
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 // ============================================
-// GMAIL CONNECTION
+// AUTHENTICATED GMAIL CONNECTION
 // ============================================
 
-async function getClient() {
-  if (!gmail) {
-    console.log("Connecting to Gmail...");
+function getRequestSupabaseClient(req) {
+  const authHeader = req.headers.authorization;
 
-    gmail = await getGmail();
-
-    console.log("Gmail connected.");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    throw new Error("Missing Supabase authorization token.");
   }
 
-  return gmail;
+  const accessToken = authHeader.substring("Bearer ".length).trim();
+
+  if (!accessToken) {
+    throw new Error("Invalid authorization token.");
+  }
+
+  return createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_ANON_KEY,
+    {
+      global: {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      },
+    }
+  );
+}
+
+async function getAuthenticatedUser(req) {
+  const userSupabase = getRequestSupabaseClient(req);
+
+  const {
+    data: { user },
+    error,
+  } = await userSupabase.auth.getUser();
+
+  if (error || !user) {
+    throw new Error("Invalid or expired Supabase session.");
+  }
+
+  return {
+    user,
+    supabase: userSupabase,
+  };
+}
+
+async function getClient(req) {
+  const { user, supabase: userSupabase } =
+    await getAuthenticatedUser(req);
+
+  const { data: connection, error } = await userSupabase
+    .from("gmail_connections")
+    .select(
+      "google_email, access_token, refresh_token, token_expiry"
+    )
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (error) {
+    console.error("Gmail connection lookup error:", error);
+    throw new Error("Failed to load Gmail connection.");
+  }
+
+  if (!connection) {
+    throw new Error(
+      "Gmail is not connected. Please sign in with Google again."
+    );
+  }
+
+  const gmail = await getGmail(
+    connection.access_token,
+    connection.refresh_token
+  );
+
+  return {
+    gmail,
+    user,
+  };
 }
 
 // ============================================
@@ -54,6 +128,179 @@ app.get("/api/health", (req, res) => {
     success: true,
     message: "Email Agent API is running",
   });
+});
+
+// ============================================
+// GOOGLE AUTHENTICATION
+// ============================================
+
+app.post("/api/auth/google", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({
+        success: false,
+        error: "Missing Supabase authorization token.",
+      });
+    }
+
+    const supabaseAccessToken =
+      authHeader.substring("Bearer ".length).trim();
+
+    if (!supabaseAccessToken) {
+      return res.status(401).json({
+        success: false,
+        error: "Invalid Supabase authorization token.",
+      });
+    }
+
+    const userSupabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY,
+      {
+        global: {
+          headers: {
+            Authorization: `Bearer ${supabaseAccessToken}`,
+          },
+        },
+      }
+    );
+
+    const {
+      data: { user },
+      error: userError,
+    } = await userSupabase.auth.getUser();
+
+    if (userError || !user) {
+      return res.status(401).json({
+        success: false,
+        error: "Invalid or expired Supabase session.",
+      });
+    }
+
+    const { serverAuthCode } = req.body || {};
+
+    if (!serverAuthCode) {
+      return res.status(400).json({
+        success: false,
+        error: "serverAuthCode is required.",
+      });
+    }
+
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        error: "Google OAuth credentials are not configured on Render.",
+      });
+    }
+
+    console.log("Exchanging Google authorization code...");
+
+    const oauth2Client = new google.auth.OAuth2(
+      GOOGLE_CLIENT_ID,
+      GOOGLE_CLIENT_SECRET
+    );
+
+    const { tokens } = await oauth2Client.getToken(serverAuthCode);
+
+    if (!tokens.access_token) {
+      return res.status(500).json({
+        success: false,
+        error: "Google did not return an access token.",
+      });
+    }
+
+    oauth2Client.setCredentials(tokens);
+
+    const gmail = google.gmail({
+      version: "v1",
+      auth: oauth2Client,
+    });
+
+    const profile = await gmail.users.getProfile({
+      userId: "me",
+    });
+
+    const googleEmail = profile.data.emailAddress || "";
+
+    if (!googleEmail) {
+      return res.status(500).json({
+        success: false,
+        error: "Unable to determine Gmail address.",
+      });
+    }
+
+    const connectionData = {
+      user_id: user.id,
+      google_email: googleEmail,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token || null,
+      token_expiry: tokens.expiry_date
+        ? new Date(tokens.expiry_date).toISOString()
+        : null,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data: existing, error: lookupError } = await userSupabase
+      .from("gmail_connections")
+      .select("id")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (lookupError) {
+      console.error("Gmail connection lookup error:", lookupError);
+
+      return res.status(500).json({
+        success: false,
+        error: "Failed to check Gmail connection.",
+      });
+    }
+
+    let saveError = null;
+
+    if (existing) {
+      const result = await userSupabase
+        .from("gmail_connections")
+        .update(connectionData)
+        .eq("id", existing.id);
+
+      saveError = result.error;
+    } else {
+      const result = await userSupabase
+        .from("gmail_connections")
+        .insert(connectionData);
+
+      saveError = result.error;
+    }
+
+    if (saveError) {
+      console.error("Gmail connection save error:", saveError);
+
+      return res.status(500).json({
+        success: false,
+        error: "Failed to save Gmail connection.",
+      });
+    }
+
+    console.log(`Gmail connected for ${user.email}: ${googleEmail}`);
+
+    return res.json({
+      success: true,
+      message: "Gmail connected successfully.",
+      googleEmail,
+    });
+  } catch (error) {
+    console.error("Google authentication error:", error);
+
+    return res.status(500).json({
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Google authentication failed.",
+    });
+  }
 });
 
 // ============================================
@@ -119,7 +366,7 @@ app.get("/api/emails", async (req, res) => {
   try {
     console.log("Fetching unread Gmail emails...");
 
-    const client = await getClient();
+    const client = await getClient(req);
 
     const emails = await getUnreadEmails(client);
 
@@ -156,7 +403,7 @@ app.get("/api/attention", async (req, res) => {
   try {
     console.log("Fetching attention emails...");
 
-    const client = await getClient();
+    const client = await getClient(req);
 
     const emails = await getAttentionEmails(client);
 
@@ -306,7 +553,7 @@ app.post("/api/send-reply", async (req, res) => {
     // GET GMAIL CLIENT
     // ----------------------------------------
 
-    const client = await getClient();
+    const client = await getClient(req);
 
     // ----------------------------------------
     // GET RECIPIENT
@@ -553,7 +800,7 @@ app.post("/api/drafts/:id/approve", async (req, res) => {
       });
     }
 
-    const client = await getClient();
+    const client = await getClient(req);
 
     const recipient =
       extractEmailAddress(pending.from);
@@ -736,7 +983,7 @@ app.delete("/api/reviews/:id", async (req, res) => {
 
 app.get("/api/dashboard", async (req, res) => {
   try {
-    const client = await getClient();
+    const client = await getClient(req);
 
     const emails = await getUnreadEmails(client);
     const attention = await getAttentionEmails(client);
