@@ -7,7 +7,7 @@ import { loadMemory } from "./agent/memory.js";
 
 import { GoogleGenAI, Type } from "@google/genai";
 
-const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-3.6-flash";
 
 function getGeminiClient() {
   if (!process.env.GEMINI_API_KEY) {
@@ -133,7 +133,7 @@ export async function getUnreadEmails(gmail) {
 
   const response = await gmail.users.messages.list({
     userId: "me",
-    labelIds: ["INBOX"],
+    labelIds: ["INBOX", "UNREAD"],
     maxResults: 100,
   });
 
@@ -597,7 +597,6 @@ ${cleanEmailBody(email.body || "")}
     model: GEMINI_MODEL,
     contents: prompt,
     config: {
-      temperature: 0.2,
       responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
@@ -768,9 +767,7 @@ Do not explain anything.
   const response = await ai.models.generateContent({
     model: GEMINI_MODEL,
     contents: prompt,
-    config: {
-      temperature: 0.5,
-    },
+    config: {},
   });
 
   let reply = String(response.text || "")
