@@ -660,6 +660,199 @@ ${cleanEmailBody(email.body || "")}
 }
 
 // ============================================
+// BATCH AI ANALYSIS - GEMINI
+// ============================================
+
+export async function analyzeEmailsBatch(emails) {
+  if (!emails || emails.length === 0) {
+    return new Map();
+  }
+
+  const emailPayload = emails
+    .map((email, index) => {
+      const body = cleanEmailBody(email.body || "")
+        .slice(0, 3500);
+
+      return `
+EMAIL_INDEX: ${index}
+EMAIL_ID: ${email.id || ""}
+FROM: ${email.from || ""}
+SUBJECT: ${email.subject || ""}
+DATE: ${email.date || ""}
+
+BODY:
+${body}
+`;
+    })
+    .join("\n\n--------------------\n\n");
+
+  const prompt = `
+Analyze all of the following emails for a personal email assistant.
+
+Return ONLY a JSON array.
+
+For every email return exactly:
+{
+  "email_index": number,
+  "summary": string,
+  "priority": "HIGH" or "LOW",
+  "reply_needed": boolean
+}
+
+HIGH means personally relevant or requiring attention:
+- personal emails
+- business/client messages
+- college communication
+- job/internship opportunities
+- payments
+- complaints
+- deadlines
+- security alerts
+- meeting requests
+- anything where ignoring it could cause a problem
+
+LOW means:
+- promotional emails
+- marketing
+- newsletters
+- advertisements
+- automated notifications
+- receipts
+- delivery notifications
+- routine notifications
+- general FYI
+
+If a real person expects a response, reply_needed must be true.
+
+Do not invent information.
+Do not omit any EMAIL_INDEX.
+
+EMAILS:
+${emailPayload}
+`;
+
+  console.log(
+    `Sending batch analysis request to Gemini for ${emails.length} emails...`
+  );
+
+  const ai = getGeminiClient();
+
+  const response = await ai.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            email_index: {
+              type: Type.INTEGER,
+            },
+            summary: {
+              type: Type.STRING,
+            },
+            priority: {
+              type: Type.STRING,
+              enum: ["HIGH", "LOW"],
+            },
+            reply_needed: {
+              type: Type.BOOLEAN,
+            },
+          },
+          required: [
+            "email_index",
+            "summary",
+            "priority",
+            "reply_needed",
+          ],
+        },
+      },
+    },
+  });
+
+  let text = String(response.text || "")
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
+  if (!text) {
+    throw new Error("Gemini returned an empty batch response.");
+  }
+
+  const firstBracket = text.indexOf("[");
+  const lastBracket = text.lastIndexOf("]");
+
+  if (
+    firstBracket !== -1 &&
+    lastBracket > firstBracket
+  ) {
+    text = text.substring(
+      firstBracket,
+      lastBracket + 1
+    );
+  }
+
+  let parsed;
+
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    console.error(
+      "Gemini invalid batch JSON:",
+      text
+    );
+
+    throw new Error(
+      "Gemini returned invalid batch JSON."
+    );
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      "Gemini batch response was not an array."
+    );
+  }
+
+  const results = new Map();
+
+  for (const item of parsed) {
+    const index = Number(item.email_index);
+
+    if (
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= emails.length
+    ) {
+      continue;
+    }
+
+    results.set(emails[index].id, {
+      summary:
+        typeof item.summary === "string"
+          ? item.summary.trim()
+          : "No summary available.",
+      priority:
+        item.priority === "HIGH"
+          ? "HIGH"
+          : "LOW",
+      reply_needed:
+        item.reply_needed === true,
+    });
+  }
+
+  if (results.size !== emails.length) {
+    throw new Error(
+      `Gemini batch returned ${results.size} of ${emails.length} email analyses.`
+    );
+  }
+
+  return results;
+}
+
+// ============================================
 // GENERATE PERSONALIZED REPLY
 // ============================================
 

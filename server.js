@@ -9,6 +9,7 @@ import {
   getUnreadEmails,
   getAttentionEmails,
   analyzeEmail,
+  analyzeEmailsBatch,
   generateReply,
   getEmailStatus,
   markAsIgnored,
@@ -996,12 +997,14 @@ async function processDashboardEmails(gmail, emails) {
     errors: [],
   };
 
+  // ----------------------------------------
+  // STEP 1 — CHECK STATUS + FAST FILTER
+  // ----------------------------------------
+
+  const emailsForAI = [];
+
   for (const email of emails) {
     try {
-      // ----------------------------------------
-      // CHECK EXISTING STATUS
-      // ----------------------------------------
-
       const existingStatus = await getEmailStatus(email.id);
 
       if (
@@ -1012,10 +1015,7 @@ async function processDashboardEmails(gmail, emails) {
         continue;
       }
 
-      // ----------------------------------------
-      // FAST PROMOTIONAL FILTER
-      // ----------------------------------------
-
+      // Fast promotional filter.
       if (isObviouslyLowPriority(email)) {
         await markAsIgnored(email.id);
 
@@ -1024,18 +1024,83 @@ async function processDashboardEmails(gmail, emails) {
         continue;
       }
 
-      // ----------------------------------------
-      // GEMINI ANALYSIS
-      // ----------------------------------------
+      emailsForAI.push(email);
 
-      console.log(
-        `🧠 Gemini analyzing: ${email.subject || "(No subject)"}`
+    } catch (error) {
+      console.error(
+        `Pre-processing failed for email ${email.id}:`,
+        error
       );
 
-      const analysis = await analyzeEmail(email);
+      results.errors.push({
+        emailId: email.id,
+        subject: email.subject || "",
+        error:
+          error.message ||
+          "Failed to prepare email for processing.",
+      });
+    }
+  }
+
+  // Nothing left for Gemini.
+  if (emailsForAI.length === 0) {
+    return results;
+  }
+
+  // ----------------------------------------
+  // STEP 2 — ONE BATCH GEMINI ANALYSIS
+  // ----------------------------------------
+
+  console.log(
+    `🧠 Starting Gemini batch analysis for ${emailsForAI.length} emails...`
+  );
+
+  let analyses;
+
+  try {
+    analyses = await analyzeEmailsBatch(
+      emailsForAI
+    );
+
+    console.log(
+      `✅ Gemini batch analysis completed for ${analyses.size} emails.`
+    );
+
+  } catch (error) {
+    console.error(
+      "❌ Gemini batch analysis failed:",
+      error
+    );
+
+    for (const email of emailsForAI) {
+      results.errors.push({
+        emailId: email.id,
+        subject: email.subject || "",
+        error:
+          error.message ||
+          "Gemini batch analysis failed.",
+      });
+    }
+
+    return results;
+  }
+
+  // ----------------------------------------
+  // STEP 3 — PROCESS EACH ANALYSIS
+  // ----------------------------------------
+
+  for (const email of emailsForAI) {
+    try {
+      const analysis = analyses.get(email.id);
+
+      if (!analysis) {
+        throw new Error(
+          "No Gemini analysis returned for this email."
+        );
+      }
 
       console.log(
-        `Gemini result: ${analysis.priority} | reply=${analysis.reply_needed}`
+        `Gemini result: ${email.subject || "(No subject)"} | ${analysis.priority} | reply=${analysis.reply_needed}`
       );
 
       // ----------------------------------------
@@ -1104,8 +1169,6 @@ async function processDashboardEmails(gmail, emails) {
 
       results.drafts.push(savedDraft);
 
-      // Keep it out of the processing loop until
-      // the user approves/rejects the draft.
       await markAsAttention(email.id);
 
     } catch (error) {
