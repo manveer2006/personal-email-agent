@@ -981,17 +981,22 @@ app.delete("/api/reviews/:id", async (req, res) => {
 
 
 
+// ============================================
+// DASHBOARD DATA
+// ============================================
+
 app.get("/api/dashboard", async (req, res) => {
   try {
-    const client = await getClient(req);
+    const { gmail } = await getClient(req);
 
-    const emails = await getUnreadEmails(client);
-    const attention = await getAttentionEmails(client);
+    const emails = await getUnreadEmails(gmail);
+    const attention = await getAttentionEmails(gmail);
     const pendingReplies = await getPendingReplies();
     const humanReviews = await getHumanReviews();
 
     res.json({
       success: true,
+
       stats: {
         emailsProcessed: emails.length,
         automaticallyHandled:
