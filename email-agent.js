@@ -5,13 +5,19 @@ import readline from "node:readline/promises";
 import { google } from "googleapis";
 import { loadMemory } from "./agent/memory.js";
 
-import OpenAI from "openai";
+import { GoogleGenAI, Type } from "@google/genai";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const GEMINI_MODEL = "gemini-2.5-flash";
 
-const OPENAI_MODEL = "gpt-5.6";
+function getGeminiClient() {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not configured.");
+  }
+
+  return new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY,
+  });
+}
 
 // ============================================
 // GMAIL PERMISSIONS
@@ -25,6 +31,11 @@ const SCOPES = [
 // ============================================
 // FILE PATHS
 // ============================================
+
+const PROCESSED_EMAILS_PATH = path.join(
+  process.cwd(),
+  "processed-emails.json"
+);
 
 
 
@@ -271,7 +282,7 @@ async function saveProcessedEmails(data) {
   );
 }
 
-async function getEmailStatus(emailId) {
+export async function getEmailStatus(emailId) {
   const data = await getProcessedEmails();
 
   if (data.replied.includes(emailId)) {
@@ -289,7 +300,7 @@ async function getEmailStatus(emailId) {
   return null;
 }
 
-async function markAsReplied(emailId) {
+export async function markAsReplied(emailId) {
   const data = await getProcessedEmails();
 
   data.replied = data.replied.filter(
@@ -309,7 +320,7 @@ async function markAsReplied(emailId) {
   await saveProcessedEmails(data);
 }
 
-async function markAsIgnored(emailId) {
+export async function markAsIgnored(emailId) {
   const data = await getProcessedEmails();
 
   data.replied = data.replied.filter(
@@ -329,7 +340,7 @@ async function markAsIgnored(emailId) {
   await saveProcessedEmails(data);
 }
 
-async function markAsAttention(emailId) {
+export async function markAsAttention(emailId) {
   const data = await getProcessedEmails();
 
   data.replied = data.replied.filter(
@@ -480,7 +491,7 @@ function cleanEmailBody(body) {
 // FAST PROMOTIONAL FILTER
 // ============================================
 
-function isObviouslyLowPriority(email) {
+export function isObviouslyLowPriority(email) {
   const from =
     email.from.toLowerCase();
 
@@ -534,27 +545,39 @@ function isObviouslyLowPriority(email) {
 
 
 // ============================================
-// AI ANALYSIS
+// AI ANALYSIS - GEMINI
 // ============================================
 
 export async function analyzeEmail(email) {
   const prompt = `
-Analyze this email.
+Analyze this email for a personal email assistant.
 
-Return ONLY valid JSON. No markdown, no code fences, no <think> tags, no explanation.
+Return ONLY a JSON object matching the requested schema.
 
-Return exactly:
-{
-  "summary": "short summary",
-  "priority": "LOW",
-  "reply_needed": false
-}
+HIGH means personally relevant or requiring attention:
+- personal emails
+- business/client messages
+- college communication
+- job/internship opportunities
+- payments
+- complaints
+- deadlines
+- security alerts
+- meeting requests
+- anything where ignoring it could cause a problem
 
-HIGH means personally relevant or requiring attention: personal emails, business/client messages, college communication, job/internship opportunities, payments, complaints, deadlines, security alerts, meeting requests, or anything where ignoring it could cause a problem.
+LOW means:
+- promotional emails
+- marketing
+- newsletters
+- advertisements
+- automated notifications
+- receipts
+- delivery notifications
+- routine notifications
+- general FYI
 
-LOW means promotional, marketing, newsletter, advertisement, automated notification, receipt, delivery notification, routine notification, or general FYI.
-
-If a real person expects a response, reply_needed should be true.
+If a real person expects a response, reply_needed must be true.
 Do not invent information.
 
 EMAIL
@@ -566,27 +589,47 @@ Body:
 ${cleanEmailBody(email.body || "")}
 `;
 
-  console.log("Sending request to OpenAI...");
+  console.log("Sending request to Gemini...");
 
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY is not configured.");
-  }
+  const ai = getGeminiClient();
 
-  const response = await openai.responses.create({
-    model: OPENAI_MODEL,
-    input: prompt,
+  const response = await ai.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: prompt,
+    config: {
+      temperature: 0.2,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          summary: {
+            type: Type.STRING,
+          },
+          priority: {
+            type: Type.STRING,
+            enum: ["HIGH", "LOW"],
+          },
+          reply_needed: {
+            type: Type.BOOLEAN,
+          },
+        },
+        required: [
+          "summary",
+          "priority",
+          "reply_needed",
+        ],
+      },
+    },
   });
 
-  let text = response.output_text;
-
-  text = String(text || "")
+  let text = String(response.text || "")
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .replace(/```json/gi, "")
     .replace(/```/g, "")
     .trim();
 
   if (!text) {
-    throw new Error("OpenAI returned an empty response.");
+    throw new Error("Gemini returned an empty response.");
   }
 
   const firstBrace = text.indexOf("{");
@@ -605,13 +648,15 @@ ${cleanEmailBody(email.body || "")}
           ? result.summary.trim()
           : "No summary available.",
       priority:
-        result.priority === "HIGH" ? "HIGH" : "LOW",
+        result.priority === "HIGH"
+          ? "HIGH"
+          : "LOW",
       reply_needed:
         result.reply_needed === true,
     };
   } catch (error) {
-    console.error("OpenAI invalid JSON:", text);
-    throw new Error("OpenAI returned invalid JSON.");
+    console.error("Gemini invalid JSON:", text);
+    throw new Error("Gemini returned invalid JSON.");
   }
 }
 
@@ -716,18 +761,19 @@ Do not use markdown.
 Do not explain anything.
 `;
 
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY is not configured.");
-  }
+  console.log("Sending reply-generation request to Gemini...");
 
-  const response = await openai.responses.create({
-    model: OPENAI_MODEL,
-    input: prompt,
+  const ai = getGeminiClient();
+
+  const response = await ai.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: prompt,
+    config: {
+      temperature: 0.5,
+    },
   });
 
-  let reply = response.output_text;
-
-  reply = String(reply || "")
+  let reply = String(response.text || "")
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .trim();
 
@@ -739,7 +785,7 @@ Do not explain anything.
     .trim();
 
   if (!reply) {
-    throw new Error("OpenAI returned an empty reply.");
+    throw new Error("Gemini returned an empty reply.");
   }
 
   return reply;
@@ -976,7 +1022,7 @@ async function processEmail(
   // ------------------------------------------
 
   console.log(
-    "\n🧠 Analyzing with OpenAI..."
+    "\n🧠 Analyzing with Gemini..."
   );
 
   let analysis;
@@ -1248,16 +1294,27 @@ async function main() {
     "=================================\n"
   );
 
-  console.log(
-    "Connecting to Gmail..."
+  const accessToken = process.env.GOOGLE_ACCESS_TOKEN || "";
+  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN || "";
+
+  if (!accessToken) {
+    console.log(
+      "CLI mode is disabled unless GOOGLE_ACCESS_TOKEN is set."
+    );
+    console.log(
+      "The production JABI server obtains Gmail credentials from Supabase."
+    );
+    return;
+  }
+
+  console.log("Connecting to Gmail...");
+
+  const gmail = await getGmail(
+    accessToken,
+    refreshToken
   );
 
-  const gmail =
-    await getGmail();
-
-  console.log(
-    "Gmail connected."
-  );
+  console.log("Gmail connected.");
 
   console.log(
     "\nChecking for unread emails..."

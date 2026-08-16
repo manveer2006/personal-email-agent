@@ -10,10 +10,15 @@ import {
   getAttentionEmails,
   analyzeEmail,
   generateReply,
+  getEmailStatus,
+  markAsIgnored,
+  markAsAttention,
+  isObviouslyLowPriority,
 } from "./email-agent.js";
 
 import {
   getPendingReplies,
+  savePendingReply,
   updatePendingReply,
   removePendingReply,
 } from "./agent/pending.js";
@@ -979,7 +984,148 @@ app.delete("/api/reviews/:id", async (req, res) => {
 // DASHBOARD DATA
 // ============================================
 
+// ============================================
+// PROCESS EMAILS FOR DASHBOARD
+// ============================================
 
+async function processDashboardEmails(gmail, emails) {
+  const results = {
+    promotions: [],
+    attention: [],
+    drafts: [],
+    errors: [],
+  };
+
+  for (const email of emails) {
+    try {
+      // ----------------------------------------
+      // CHECK EXISTING STATUS
+      // ----------------------------------------
+
+      const existingStatus = await getEmailStatus(email.id);
+
+      if (
+        existingStatus === "replied" ||
+        existingStatus === "ignored" ||
+        existingStatus === "attention"
+      ) {
+        continue;
+      }
+
+      // ----------------------------------------
+      // FAST PROMOTIONAL FILTER
+      // ----------------------------------------
+
+      if (isObviouslyLowPriority(email)) {
+        await markAsIgnored(email.id);
+
+        results.promotions.push(email);
+
+        continue;
+      }
+
+      // ----------------------------------------
+      // GEMINI ANALYSIS
+      // ----------------------------------------
+
+      console.log(
+        `🧠 Gemini analyzing: ${email.subject || "(No subject)"}`
+      );
+
+      const analysis = await analyzeEmail(email);
+
+      console.log(
+        `Gemini result: ${analysis.priority} | reply=${analysis.reply_needed}`
+      );
+
+      // ----------------------------------------
+      // LOW PRIORITY
+      // ----------------------------------------
+
+      if (analysis.priority !== "HIGH") {
+        await markAsIgnored(email.id);
+
+        results.promotions.push({
+          ...email,
+          analysis,
+        });
+
+        continue;
+      }
+
+      // ----------------------------------------
+      // HIGH PRIORITY — NO REPLY
+      // ----------------------------------------
+
+      if (!analysis.reply_needed) {
+        await markAsAttention(email.id);
+
+        results.attention.push({
+          ...email,
+          analysis,
+        });
+
+        continue;
+      }
+
+      // ----------------------------------------
+      // HIGH PRIORITY — REPLY NEEDED
+      // ----------------------------------------
+
+      console.log(
+        `✍️ Generating Gemini draft: ${email.subject || "(No subject)"}`
+      );
+
+      const draft = await generateReply(
+        email,
+        analysis
+      );
+
+      if (!draft || !draft.trim()) {
+        throw new Error(
+          "Gemini generated an empty draft."
+        );
+      }
+
+      // ----------------------------------------
+      // SAVE DRAFT
+      // ----------------------------------------
+
+      const savedDraft = await savePendingReply({
+        emailId: email.id,
+        threadId: email.threadId || "",
+        from: email.from || "",
+        subject: email.subject || "",
+        originalBody: email.body || "",
+        category: analysis.category || "OTHER",
+        priority: analysis.priority || "HIGH",
+        draft: draft.trim(),
+      });
+
+      results.drafts.push(savedDraft);
+
+      // Keep it out of the processing loop until
+      // the user approves/rejects the draft.
+      await markAsAttention(email.id);
+
+    } catch (error) {
+      console.error(
+        `Dashboard processing failed for email ${email.id}:`,
+        error
+      );
+
+      results.errors.push({
+        emailId: email.id,
+        subject: email.subject || "",
+        error:
+          error.message ||
+          "Failed to process email.",
+      });
+    }
+  }
+
+  return results;
+}
 
 // ============================================
 // DASHBOARD DATA
@@ -989,47 +1135,110 @@ app.get("/api/dashboard", async (req, res) => {
   try {
     const { gmail } = await getClient(req);
 
+    // Get unread inbox emails.
     const emails = await getUnreadEmails(gmail);
-    const attention = await getAttentionEmails(gmail);
-    const pendingReplies = await getPendingReplies();
-    const humanReviews = await getHumanReviews();
+
+    // Process emails through the JABI/Gemini pipeline.
+    const processed =
+      await processDashboardEmails(
+        gmail,
+        emails
+      );
+
+    // Load the latest saved data after processing.
+    const attention =
+      await getAttentionEmails(gmail);
+
+    const pendingReplies =
+      await getPendingReplies();
+
+    const humanReviews =
+      await getHumanReviews();
+
+    const ignoredCount =
+      processed.promotions.length;
+
+    const draftCount =
+      pendingReplies.length;
+
+    const attentionCount =
+      attention.length +
+      humanReviews.length;
 
     res.json({
       success: true,
 
       stats: {
         emailsProcessed: emails.length,
+
         automaticallyHandled:
-          emails.length -
-          attention.length -
-          pendingReplies.length,
-        needsAttention: humanReviews.length,
-        draftsWaiting: pendingReplies.length,
+          ignoredCount,
+
+        needsAttention:
+          attentionCount,
+
+        draftsWaiting:
+          draftCount,
+
+        promotions:
+          ignoredCount,
       },
 
-      attention: humanReviews,
+      attention: [
+        ...attention,
+        ...humanReviews,
+      ],
 
       drafts: pendingReplies,
 
-      recentEmails: emails.slice(0, 10).map((email) => ({
-        id: email.id || "",
-        threadId: email.threadId || "",
-        from: email.from || "",
-        subject: email.subject || "",
-        date: email.date || "",
-        body: cleanEmailBody(email.body || ""),
-      })),
+      recentEmails:
+        emails.slice(0, 10).map(
+          (email) => ({
+            id: email.id || "",
+            threadId:
+              email.threadId || "",
+            from:
+              email.from || "",
+            subject:
+              email.subject || "",
+            date:
+              email.date || "",
+            body:
+              cleanEmailBody(
+                email.body || ""
+              ),
+          })
+        ),
+
+      processing: {
+        promotions:
+          processed.promotions.length,
+
+        attention:
+          processed.attention.length,
+
+        drafts:
+          processed.drafts.length,
+
+        errors:
+          processed.errors.length,
+      },
     });
+
   } catch (error) {
-    console.error("Dashboard API error:", error);
+    console.error(
+      "Dashboard API error:",
+      error
+    );
 
     res.status(500).json({
       success: false,
-      error: error.message || "Failed to load dashboard.",
+      error:
+        error.message ||
+        "Failed to load dashboard.",
     });
   }
 });
-
 
 // ============================================
 // 404 API HANDLER
